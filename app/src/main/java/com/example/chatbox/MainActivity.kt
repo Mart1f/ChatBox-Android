@@ -296,9 +296,9 @@ class MainActivity : ComponentActivity() {
         if (peers.none { it.isSimulated }) {
             peers.addAll(
                 listOf(
-                    Peer("SIM-A", "Laura", true, true),
-                    Peer("SIM-B", "Nico", true, true),
-                    Peer("SIM-C", "Sara", true, true)
+                    Peer("SIM-A", "L4ur4", true, true),
+                    Peer("SIM-B", "N36", true, true),
+                    Peer("SIM-C", "Sarixx", true, true)
                 )
             )
             addSystemMsg("🧪 Simulation ON")
@@ -408,7 +408,7 @@ private fun AppShell(
                     Text("ChatBox", style = MaterialTheme.typography.titleLarge)
                     Text(
                         text = when {
-                            simulationMode -> "Simulación · $myName"
+                            simulationMode -> "Simulation · $myName"
                             runningReal -> "Real (auto) · $myName"
                             else -> "Real · $myName"
                         },
