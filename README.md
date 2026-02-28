@@ -8,6 +8,7 @@
 ## Tech Stack
 - Java/Kotlin
 - Android SDK
+- Bluetooth
 - WiFi Direct API
 
 ## Architecture
