@@ -59,9 +59,9 @@ class MainActivity : ComponentActivity() {
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
             val denied = result.filterValues { !it }.keys
             if (denied.isNotEmpty()) {
-                addSystemMsg("⚠️ Permisos denegados: $denied")
+                addSystemMsg("⚠️ Denied Permissions: $denied")
             } else {
-                addSystemMsg("✅ Permisos OK")
+                addSystemMsg("✅ Permissions OK")
                 if (!simulationMode) startAutoNetwork()
             }
         }
@@ -159,7 +159,7 @@ class MainActivity : ComponentActivity() {
     // ---------- Real network ----------
     private fun startAutoNetwork() {
         if (!hasAllNeededPermissions()) {
-            addSystemMsg("⚠️ Falta permisos. Dale al botón de permisos.")
+            addSystemMsg("⚠️ Missing permissions. Press the permissions button..")
             return
         }
 
@@ -250,7 +250,7 @@ class MainActivity : ComponentActivity() {
         if (t.isEmpty()) return
 
         val msgId = UUID.randomUUID().toString().take(8)
-        publicMessages.add(ChatMessage(msgId, "Yo", t, mine = true))
+        publicMessages.add(ChatMessage(msgId, "Me", t, mine = true))
 
         if (simulationMode) {
             simulateIncomingPublic()
@@ -259,7 +259,7 @@ class MainActivity : ComponentActivity() {
 
         val ids = peers.filter { it.connected && !it.isSimulated }.map { it.id }
         if (ids.isEmpty()) {
-            addSystemMsg("⚠️ No hay peers conectados")
+            addSystemMsg("⚠️ No peers connected")
             return
         }
 
@@ -282,7 +282,7 @@ class MainActivity : ComponentActivity() {
         }
 
         if (!peer.connected) {
-            addSystemMsg("⚠️ Peer no conectado")
+            addSystemMsg("⚠️ Peer no connected")
             return
         }
 
@@ -331,7 +331,7 @@ class MainActivity : ComponentActivity() {
         val msgId = UUID.randomUUID().toString().take(8)
         scope.launch {
             delay(700)
-            publicMessages.add(ChatMessage(msgId, p.name, listOf("ok!", "jajaja", "probando 😄", "hola!", "nice").random(), false))
+            publicMessages.add(ChatMessage(msgId, p.name, listOf("ok!", "hahaha", "tryng 😄", "bonjour!", "nice").random(), false))
         }
     }
 
@@ -340,7 +340,7 @@ class MainActivity : ComponentActivity() {
         val list = dmMessages.getOrPut(peerId) { mutableListOf() }
         scope.launch {
             delay(600)
-            list.add(ChatMessage(msgId, peerName, listOf("dale", "te leo", "ok", "funciona").random(), false))
+            list.add(ChatMessage(msgId, peerName, listOf("ca va", "je te vois", "ok", "works").random(), false))
         }
     }
 
@@ -416,7 +416,7 @@ private fun AppShell(
                     )
                 }
 
-                // Botones pequeños
+                //little buttons
                 TextButton(onClick = onRequestPerms) { Text("Perms") }
 
                 if (!simulationMode) {
@@ -485,11 +485,11 @@ private fun PublicChat(
     onSend: (String) -> Unit
 ) {
     Column(modifier.padding(12.dp)) {
-        Text("Peers conectados: ${peers.count { it.connected }}", style = MaterialTheme.typography.titleMedium)
+        Text("Peers connected: ${peers.count { it.connected }}", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
         ChatList(Modifier.weight(1f), messages)
         Spacer(Modifier.height(8.dp))
-        ChatComposer("Mensaje al chat público…", onSend)
+        ChatComposer("Message to public chat…", onSend)
     }
 }
 
@@ -507,7 +507,7 @@ private fun DmChat(
     val list = dmMessages[selectedPeerId].orEmpty()
 
     Column(modifier.padding(12.dp)) {
-        Text("Chats privados", style = MaterialTheme.typography.titleMedium)
+        Text("Privates chats", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
 
         // selector
@@ -538,7 +538,7 @@ private fun DmChat(
         Spacer(Modifier.height(10.dp))
 
         if (selected == null) {
-            Text("Selecciona un peer conectado para abrir un DM.")
+            Text("Select a connected peer to open a DM.")
             return
         }
 
@@ -546,7 +546,7 @@ private fun DmChat(
         Spacer(Modifier.height(8.dp))
         ChatList(Modifier.weight(1f), list)
         Spacer(Modifier.height(8.dp))
-        ChatComposer("Mensaje a ${selected.name}…") { txt -> onSend(selected.id, txt) }
+        ChatComposer("Message to ${selected.name}…") { txt -> onSend(selected.id, txt) }
     }
 }
 
@@ -558,7 +558,7 @@ private fun StationsView(
     onProximityChange: (Float) -> Unit
 ) {
     Column(modifier.padding(12.dp)) {
-        Text("Proximidad simulada: ${proximityMeters.toInt()}m", style = MaterialTheme.typography.titleMedium)
+        Text("Simulated proximity: ${proximityMeters.toInt()}m", style = MaterialTheme.typography.titleMedium)
         Slider(value = proximityMeters, onValueChange = onProximityChange, valueRange = 0f..30f)
         Spacer(Modifier.height(8.dp))
 
@@ -574,8 +574,8 @@ private fun StationsView(
                 ) {
                     Column(Modifier.padding(12.dp)) {
                         Text(st.name, style = MaterialTheme.typography.titleMedium)
-                        Text("Disponibles: ${st.available}/${st.capacity}")
-                        if (near) Text("📡 Cerca: recibes updates", style = MaterialTheme.typography.labelMedium)
+                        Text("Availables: ${st.available}/${st.capacity}")
+                        if (near) Text("Close: you receive updates", style = MaterialTheme.typography.labelMedium)
                     }
                 }
             }
