@@ -1,4 +1,7 @@
-# 📡 ChatBox – Proximity Mesh Chat for Android
+# ChatBox – Proximity Mesh Chat for Android
+
+<img width="1536" height="1024" alt="ChatGPT Image 6 mars 2026, 10_27_56" src="https://github.com/user-attachments/assets/570e1e39-74de-45d0-8f3c-7ab7c129d5cf" />
+
 
 ChatBox is an experimental peer-to-peer proximity messaging app built with:
 
