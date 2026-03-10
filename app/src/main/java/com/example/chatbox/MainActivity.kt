@@ -1,6 +1,8 @@
 package com.example.chatbox
 
 import android.Manifest
+import android.content.Context
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -11,104 +13,179 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Send
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Divider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import androidx.compose.foundation.shape.RoundedCornerShape
 import com.google.android.gms.nearby.Nearby
-import com.google.android.gms.nearby.connection.*
-import kotlinx.coroutines.*
+import com.google.android.gms.nearby.connection.AdvertisingOptions
+import com.google.android.gms.nearby.connection.ConnectionInfo
+import com.google.android.gms.nearby.connection.ConnectionLifecycleCallback
+import com.google.android.gms.nearby.connection.ConnectionResolution
+import com.google.android.gms.nearby.connection.ConnectionsClient
+import com.google.android.gms.nearby.connection.DiscoveredEndpointInfo
+import com.google.android.gms.nearby.connection.DiscoveryOptions
+import com.google.android.gms.nearby.connection.EndpointDiscoveryCallback
+import com.google.android.gms.nearby.connection.Payload
+import com.google.android.gms.nearby.connection.PayloadCallback
+import com.google.android.gms.nearby.connection.PayloadTransferUpdate
+import com.google.android.gms.nearby.connection.Strategy
+import org.json.JSONArray
+import org.json.JSONObject
 import java.nio.charset.Charset
 import java.util.UUID
 import kotlin.math.abs
-import kotlin.random.Random
 
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        private const val PREFS_NAME = "chatbox_prefs"
+        private const val KEY_NICKNAME = "nickname"
+        private const val KEY_PUBLIC_MESSAGES = "public_messages"
+        private const val KEY_DM_MESSAGES = "dm_messages"
+        private const val KEY_STATIONS = "stations"
+        private const val KEY_SELECTED_DM_PEER = "selected_dm_peer"
+
+        private const val SERVICE_ID = "com.example.chatbox.nearby"
+        private const val SYSTEM_NAME = "System"
+    }
+
+    private lateinit var prefs: SharedPreferences
     private lateinit var connectionsClient: ConnectionsClient
-    private val serviceId = "com.example.chatbox.nearby"
-    private val myName = "Node-" + Build.MODEL.replace(" ", "_") + "-" + (1000..9999).random()
+
     private val strategy = Strategy.P2P_CLUSTER
+
+    private var nickname by mutableStateOf("")
+    private var isConnectedToNetwork by mutableStateOf(false)
+    private var showNicknameDialog by mutableStateOf(false)
+    private var selectedDmPeerId by mutableStateOf<String?>(null)
+    private var proximityMeters by mutableFloatStateOf(15f)
 
     private val peers = mutableStateListOf<Peer>()
     private val publicMessages = mutableStateListOf<ChatMessage>()
     private val dmMessages = mutableStateMapOf<String, MutableList<ChatMessage>>()
     private val stations = mutableStateListOf<BikeStation>()
 
-    private var selectedDmPeerId by mutableStateOf<String?>(null)
-    private var simulationMode by mutableStateOf(true)
-    private var runningRealNetwork by mutableStateOf(false)
-
-    private var proximityMeters by mutableFloatStateOf(15f)
-
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private var simJob: Job? = null
-
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
             val denied = result.filterValues { !it }.keys
             if (denied.isNotEmpty()) {
-                addSystemMsg("⚠️ Denied Permissions: $denied")
+                addSystemMsg("Permissions denied: $denied")
             } else {
-                addSystemMsg("✅ Permissions OK")
-                if (!simulationMode) startAutoNetwork()
+                addSystemMsg("Permissions granted")
+                connectToNetwork()
             }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         connectionsClient = Nearby.getConnectionsClient(this)
 
-        stations.addAll(
-            listOf(
-                BikeStation("ST-001", "Gare Centrale", 18, 6, 0f),
-                BikeStation("ST-002", "Campus IMT", 22, 14, 12f),
-                BikeStation("ST-003", "Centre Ville", 12, 3, 25f)
-            )
-        )
+        nickname = prefs.getString(KEY_NICKNAME, "") ?: ""
+        selectedDmPeerId = prefs.getString(KEY_SELECTED_DM_PEER, null)
 
-        startSimulation()
+        loadPublicMessages()
+        loadDmMessages()
+        loadStations()
+
+        if (stations.isEmpty()) {
+            stations.addAll(defaultStations())
+            saveStations()
+        }
+
+        if (nickname.isBlank()) {
+            showNicknameDialog = true
+        }
 
         setContent {
             MaterialTheme {
                 AppShell(
-                    myName = myName,
-                    simulationMode = simulationMode,
-                    runningReal = runningRealNetwork,
+                    nickname = nickname,
+                    isConnected = isConnectedToNetwork,
                     peers = peers,
                     selectedDmPeerId = selectedDmPeerId,
                     publicMessages = publicMessages,
                     dmMessages = dmMessages,
                     stations = stations,
                     proximityMeters = proximityMeters,
-                    onProximityChange = { proximityMeters = it },
-                    onToggleMode = { sim ->
-                        simulationMode = sim
-                        if (simulationMode) {
-                            stopRealNetwork()
-                            startSimulation()
-                        } else {
-                            stopSimulation()
-                            requestAllNeededPermissions()
+                    onProximityChange = { newValue ->
+                        proximityMeters = newValue
+                        val updatedStations = stations.mapIndexed { index, st ->
+                            val stationPosition = index * 10f
+                            val near = abs(stationPosition - proximityMeters) < 5f
+                            if (near) {
+                                val delta = listOf(-1, 0, 1).random()
+                                st.copy(available = (st.available + delta).coerceIn(0, st.capacity))
+                            } else {
+                                st
+                            }
+                        }
+                        stations.clear()
+                        stations.addAll(updatedStations)
+                        saveStations()
+                    },
+                    showNicknameDialog = showNicknameDialog,
+                    onRequestNickname = { showNicknameDialog = true },
+                    onSaveNickname = { newName ->
+                        val clean = newName.trim()
+                        if (clean.isNotBlank()) {
+                            val oldName = nickname
+                            nickname = clean
+                            prefs.edit().putString(KEY_NICKNAME, nickname).apply()
+                            showNicknameDialog = false
+
+                            if (isConnectedToNetwork && oldName != nickname) {
+                                addSystemMsg("Nickname updated. Reconnecting to refresh your identity.")
+                                disconnectFromNetwork(clearPeers = true, userInitiated = false)
+                                connectToNetwork()
+                            }
                         }
                     },
-                    onSelectDmPeer = { selectedDmPeerId = it },
+                    onDismissNicknameDialog = {
+                        if (nickname.isNotBlank()) {
+                            showNicknameDialog = false
+                        }
+                    },
+                    onConnect = { requestAllNeededPermissions() },
+                    onDisconnect = { disconnectFromNetwork(clearPeers = false, userInitiated = true) },
+                    onClearLocalData = { clearLocalData() },
+                    onSelectDmPeer = {
+                        selectedDmPeerId = it
+                        prefs.edit().putString(KEY_SELECTED_DM_PEER, it).apply()
+                    },
                     onSendPublic = { sendPublic(it) },
-                    onSendDm = { peerId, txt -> sendDm(peerId, txt) },
-                    onStartReal = { startAutoNetwork() },
-                    onStopReal = { stopRealNetwork() },
-                    onRequestPerms = { requestAllNeededPermissions() }
+                    onSendDm = { peerId, text -> sendDm(peerId, text) }
                 )
             }
         }
@@ -116,11 +193,19 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        scope.cancel()
-        stopRealNetwork()
+        disconnectFromNetwork(clearPeers = false, userInitiated = false)
     }
 
-    // ---------- Permissions ----------
+    private fun defaultStations(): List<BikeStation> {
+        return listOf(
+            BikeStation("ST-001", "Gare Centrale", 18, 6),
+            BikeStation("ST-002", "Campus IMT", 22, 14),
+            BikeStation("ST-003", "Centre Ville", 12, 3)
+        )
+    }
+
+    // ---------------- Permissions ----------------
+
     private fun requestAllNeededPermissions() {
         val perms = mutableListOf<String>()
         perms += Manifest.permission.ACCESS_COARSE_LOCATION
@@ -134,6 +219,7 @@ class MainActivity : ComponentActivity() {
             perms += Manifest.permission.BLUETOOTH_CONNECT
             perms += Manifest.permission.BLUETOOTH_ADVERTISE
         }
+
         permissionLauncher.launch(perms.toTypedArray())
     }
 
@@ -156,62 +242,110 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // ---------- Real network ----------
-    private fun startAutoNetwork() {
-        if (!hasAllNeededPermissions()) {
-            addSystemMsg("⚠️ Missing permissions. Press the permissions button..")
+    // ---------------- Network ----------------
+
+    private fun connectToNetwork() {
+        if (nickname.isBlank()) {
+            showNicknameDialog = true
             return
         }
 
-        stopRealNetwork()
-        simulationMode = false
-        runningRealNetwork = true
-        addSystemMsg("🟢 Auto-network: advertising + discovery")
+        if (!hasAllNeededPermissions()) {
+            addSystemMsg("Missing permissions")
+            return
+        }
 
-        val adv = AdvertisingOptions.Builder().setStrategy(strategy).build()
-        connectionsClient.startAdvertising(myName, serviceId, connectionLifecycleCallback, adv)
-            .addOnFailureListener { addSystemMsg("❌ Advertising error: ${it.message}") }
+        if (isConnectedToNetwork) {
+            addSystemMsg("Already connected")
+            return
+        }
 
-        val disc = DiscoveryOptions.Builder().setStrategy(strategy).build()
-        connectionsClient.startDiscovery(serviceId, endpointDiscoveryCallback, disc)
-            .addOnFailureListener { addSystemMsg("❌ Discovery error: ${it.message}") }
+        isConnectedToNetwork = true
+        addSystemMsg("Connecting to network as $nickname")
+
+        val advOptions = AdvertisingOptions.Builder().setStrategy(strategy).build()
+        connectionsClient.startAdvertising(
+            nickname,
+            SERVICE_ID,
+            connectionLifecycleCallback,
+            advOptions
+        ).addOnFailureListener {
+            isConnectedToNetwork = false
+            addSystemMsg("Advertising error: ${it.message}")
+        }
+
+        val discOptions = DiscoveryOptions.Builder().setStrategy(strategy).build()
+        connectionsClient.startDiscovery(
+            SERVICE_ID,
+            endpointDiscoveryCallback,
+            discOptions
+        ).addOnFailureListener {
+            isConnectedToNetwork = false
+            addSystemMsg("Discovery error: ${it.message}")
+        }
     }
 
-    private fun stopRealNetwork() {
-        runningRealNetwork = false
+    private fun disconnectFromNetwork(clearPeers: Boolean, userInitiated: Boolean) {
+        if (!isConnectedToNetwork && !clearPeers) return
+
+        isConnectedToNetwork = false
         try {
             connectionsClient.stopAdvertising()
             connectionsClient.stopDiscovery()
             connectionsClient.stopAllEndpoints()
-        } catch (_: Exception) {}
-        addSystemMsg("⏹️ Real network stopped")
+        } catch (_: Exception) {
+        }
+
+        if (clearPeers) {
+            peers.clear()
+            selectedDmPeerId = null
+            prefs.edit().remove(KEY_SELECTED_DM_PEER).apply()
+        } else {
+            val updated = peers.map { it.copy(connected = false) }
+            peers.clear()
+            peers.addAll(updated)
+        }
+
+        if (userInitiated) {
+            addSystemMsg("Disconnected from network")
+        }
     }
 
     private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
-        override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
-            upsertPeer(endpointId, info.endpointName, connected = false, simulated = false)
+        override fun onConnectionInitiated(endpointId: String, connectionInfo: ConnectionInfo) {
+            upsertPeer(endpointId, connectionInfo.endpointName, connected = false)
             connectionsClient.acceptConnection(endpointId, payloadCallback)
         }
 
         override fun onConnectionResult(endpointId: String, result: ConnectionResolution) {
             if (result.status.isSuccess) {
-                upsertPeer(endpointId, peerName(endpointId), connected = true, simulated = false)
-                addSystemMsg("✅ Connected: ${peerName(endpointId)}")
+                upsertPeer(endpointId, peerName(endpointId), connected = true)
+                addSystemMsg("Connected with ${peerName(endpointId)}")
             } else {
-                addSystemMsg("❌ Conn failed: ${result.status.statusMessage}")
+                markDisconnected(endpointId)
+                addSystemMsg("Connection failed: ${result.status.statusMessage}")
             }
         }
 
         override fun onDisconnected(endpointId: String) {
             markDisconnected(endpointId)
-            addSystemMsg("🔌 Disconnected: ${peerName(endpointId)}")
+            addSystemMsg("Peer disconnected: ${peerName(endpointId)}")
         }
     }
 
     private val endpointDiscoveryCallback = object : EndpointDiscoveryCallback() {
         override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
-            upsertPeer(endpointId, info.endpointName, connected = false, simulated = false)
-            connectionsClient.requestConnection(myName, endpointId, connectionLifecycleCallback)
+            val existing = peers.firstOrNull { it.id == endpointId }
+            if (existing?.connected == true) return
+
+            upsertPeer(endpointId, info.endpointName, connected = false)
+            connectionsClient.requestConnection(
+                nickname,
+                endpointId,
+                connectionLifecycleCallback
+            ).addOnFailureListener {
+                addSystemMsg("Request connection failed for ${info.endpointName}: ${it.message}")
+            }
         }
 
         override fun onEndpointLost(endpointId: String) {
@@ -222,163 +356,356 @@ class MainActivity : ComponentActivity() {
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
             if (payload.type != Payload.Type.BYTES) return
-            val raw = payload.asBytes()?.toString(Charset.defaultCharset()).orEmpty()
 
-            val parts = raw.split("|", limit = 5)
-            if (parts.size < 5) return
+            val raw = payload.asBytes()?.toString(Charset.defaultCharset()).orEmpty()
+            val parts = raw.split("|", limit = 6)
+            if (parts.size < 6) return
 
             val type = parts[0]
             val scope = parts[1]
+            val target = parts[2]
             val msgId = parts[3]
-            val text = parts[4]
-            val fromName = peerName(endpointId)
+            val senderName = parts[4]
+            val text = parts[5]
 
-            if (type == "CHAT" && scope == "PUBLIC") {
-                publicMessages.add(ChatMessage(msgId, fromName, text, mine = false))
-            } else if (type == "CHAT" && scope == "DM") {
-                val list = dmMessages.getOrPut(endpointId) { mutableListOf() }
-                list.add(ChatMessage(msgId, fromName, text, mine = false))
+            when (type) {
+                "CHAT" -> {
+                    if (scope == "PUBLIC") {
+                        if (publicMessages.none { it.id == msgId }) {
+                            publicMessages.add(
+                                ChatMessage(
+                                    id = msgId,
+                                    from = senderName,
+                                    text = text,
+                                    mine = false
+                                )
+                            )
+                            savePublicMessages()
+                        }
+                    } else if (scope == "DM") {
+                        val peer = peers.firstOrNull { it.id == endpointId }
+                        val intendedForMe = target == nickname || target == peer?.name || target == "*"
+                        if (intendedForMe) {
+                            val list = dmMessages.getOrPut(endpointId) { mutableListOf() }
+                            if (list.none { it.id == msgId }) {
+                                list.add(
+                                    ChatMessage(
+                                        id = msgId,
+                                        from = senderName,
+                                        text = text,
+                                        mine = false
+                                    )
+                                )
+                                saveDmMessages()
+                            }
+                        }
+                    }
+                }
+
+                "STATION" -> {
+                    val stationObj = parseStationPayload(text)
+                    if (stationObj != null) {
+                        upsertStation(stationObj)
+                        saveStations()
+                    }
+                }
             }
         }
 
         override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {}
     }
 
-    // ---------- Send ----------
+    // ---------------- Messaging ----------------
+
     private fun sendPublic(text: String) {
-        val t = text.trim()
-        if (t.isEmpty()) return
+        val clean = text.trim()
+        if (clean.isEmpty()) return
 
         val msgId = UUID.randomUUID().toString().take(8)
-        publicMessages.add(ChatMessage(msgId, "Me", t, mine = true))
+        val message = ChatMessage(
+            id = msgId,
+            from = nickname,
+            text = clean,
+            mine = true
+        )
+        publicMessages.add(message)
+        savePublicMessages()
 
-        if (simulationMode) {
-            simulateIncomingPublic()
+        val connectedIds = peers.filter { it.connected }.map { it.id }
+        if (connectedIds.isEmpty()) {
+            addSystemMsg("No peers connected")
             return
         }
 
-        val ids = peers.filter { it.connected && !it.isSimulated }.map { it.id }
-        if (ids.isEmpty()) {
-            addSystemMsg("⚠️ No peers connected")
-            return
-        }
-
-        val payload = Payload.fromBytes("CHAT|PUBLIC|*|$msgId|$t".toByteArray())
-        connectionsClient.sendPayload(ids, payload)
+        val payloadText = "CHAT|PUBLIC|*|$msgId|$nickname|$clean"
+        connectionsClient.sendPayload(connectedIds, Payload.fromBytes(payloadText.toByteArray()))
+            .addOnFailureListener { addSystemMsg("Public message send failed: ${it.message}") }
     }
 
     private fun sendDm(peerId: String, text: String) {
-        val t = text.trim()
-        if (t.isEmpty()) return
+        val clean = text.trim()
+        if (clean.isEmpty()) return
 
         val peer = peers.firstOrNull { it.id == peerId } ?: return
-        val msgId = UUID.randomUUID().toString().take(8)
-        val list = dmMessages.getOrPut(peerId) { mutableListOf() }
-        list.add(ChatMessage(msgId, "Yo", t, mine = true))
-
-        if (simulationMode) {
-            simulateIncomingDm(peerId, peer.name)
-            return
-        }
-
         if (!peer.connected) {
-            addSystemMsg("⚠️ Peer no connected")
+            addSystemMsg("That peer is not connected")
             return
         }
 
-        val payload = Payload.fromBytes("CHAT|DM|$peerId|$msgId|$t".toByteArray())
-        connectionsClient.sendPayload(listOf(peerId), payload)
-    }
-
-    // ---------- Simulation ----------
-    private fun startSimulation() {
-        if (!simulationMode) return
-        if (peers.none { it.isSimulated }) {
-            peers.addAll(
-                listOf(
-                    Peer("SIM-A", "L4ur4", true, true),
-                    Peer("SIM-B", "N36", true, true),
-                    Peer("SIM-C", "Sarixx", true, true)
-                )
-            )
-            addSystemMsg("🧪 Simulation ON")
-        }
-
-        simJob?.cancel()
-        simJob = scope.launch {
-            while (isActive && simulationMode) {
-                delay(2500)
-                stations.forEach { st ->
-                    val dist = abs(st.x - proximityMeters)
-                    if (dist < 5f) {
-                        val delta = Random.nextInt(-2, 3)
-                        st.available = (st.available + delta).coerceIn(0, st.capacity)
-                    }
-                }
-            }
-        }
-    }
-
-    private fun stopSimulation() {
-        simJob?.cancel()
-        simJob = null
-        peers.removeAll { it.isSimulated }
-        addSystemMsg("🧪 Simulation OFF")
-    }
-
-    private fun simulateIncomingPublic() {
-        val p = peers.filter { it.isSimulated }.randomOrNull() ?: return
-        val msgId = UUID.randomUUID().toString().take(8)
-        scope.launch {
-            delay(700)
-            publicMessages.add(ChatMessage(msgId, p.name, listOf("ok!", "hahaha", "tryng 😄", "bonjour!", "nice").random(), false))
-        }
-    }
-
-    private fun simulateIncomingDm(peerId: String, peerName: String) {
         val msgId = UUID.randomUUID().toString().take(8)
         val list = dmMessages.getOrPut(peerId) { mutableListOf() }
-        scope.launch {
-            delay(600)
-            list.add(ChatMessage(msgId, peerName, listOf("ca va", "je te vois", "ok", "works").random(), false))
+        list.add(
+            ChatMessage(
+                id = msgId,
+                from = nickname,
+                text = clean,
+                mine = true
+            )
+        )
+        saveDmMessages()
+
+        val payloadText = "CHAT|DM|${peer.name}|$msgId|$nickname|$clean"
+        connectionsClient.sendPayload(listOf(peerId), Payload.fromBytes(payloadText.toByteArray()))
+            .addOnFailureListener { addSystemMsg("DM send failed: ${it.message}") }
+    }
+
+    // ---------------- Stations ----------------
+
+    private fun parseStationPayload(raw: String): BikeStation? {
+        return try {
+            val map = raw.split(";")
+                .mapNotNull {
+                    val kv = it.split("=", limit = 2)
+                    if (kv.size == 2) kv[0] to kv[1] else null
+                }
+                .toMap()
+
+            BikeStation(
+                id = map["stationId"] ?: return null,
+                name = map["name"] ?: "Unknown Station",
+                available = map["available"]?.toIntOrNull() ?: 0,
+                capacity = map["capacity"]?.toIntOrNull() ?: 0
+            )
+        } catch (_: Exception) {
+            null
         }
     }
 
-    // ---------- Helpers ----------
-    private fun addSystemMsg(text: String) {
-        publicMessages.add(ChatMessage(UUID.randomUUID().toString().take(8), "Sistema", text, mine = false, isSystem = true))
+    private fun upsertStation(station: BikeStation) {
+        val idx = stations.indexOfFirst { it.id == station.id }
+        if (idx >= 0) {
+            stations[idx] = station
+        } else {
+            stations.add(station)
+        }
     }
 
-    private fun peerName(endpointId: String): String =
-        peers.firstOrNull { it.id == endpointId }?.name ?: endpointId.take(8)
+    // ---------------- Persistence ----------------
 
-    private fun upsertPeer(id: String, name: String, connected: Boolean, simulated: Boolean) {
+    private fun loadPublicMessages() {
+        publicMessages.clear()
+        val raw = prefs.getString(KEY_PUBLIC_MESSAGES, null) ?: return
+        try {
+            val arr = JSONArray(raw)
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                publicMessages.add(
+                    ChatMessage(
+                        id = obj.getString("id"),
+                        from = obj.getString("from"),
+                        text = obj.getString("text"),
+                        mine = obj.getBoolean("mine"),
+                        isSystem = obj.optBoolean("isSystem", false)
+                    )
+                )
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun savePublicMessages() {
+        val arr = JSONArray()
+        publicMessages.forEach { msg ->
+            arr.put(
+                JSONObject().apply {
+                    put("id", msg.id)
+                    put("from", msg.from)
+                    put("text", msg.text)
+                    put("mine", msg.mine)
+                    put("isSystem", msg.isSystem)
+                }
+            )
+        }
+        prefs.edit().putString(KEY_PUBLIC_MESSAGES, arr.toString()).apply()
+    }
+
+    private fun loadDmMessages() {
+        dmMessages.clear()
+        val raw = prefs.getString(KEY_DM_MESSAGES, null) ?: return
+        try {
+            val root = JSONObject(raw)
+            val keys = root.keys()
+            while (keys.hasNext()) {
+                val peerId = keys.next()
+                val arr = root.getJSONArray(peerId)
+                val list = mutableListOf<ChatMessage>()
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    list.add(
+                        ChatMessage(
+                            id = obj.getString("id"),
+                            from = obj.getString("from"),
+                            text = obj.getString("text"),
+                            mine = obj.getBoolean("mine"),
+                            isSystem = obj.optBoolean("isSystem", false)
+                        )
+                    )
+                }
+                dmMessages[peerId] = list
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun saveDmMessages() {
+        val root = JSONObject()
+        dmMessages.forEach { (peerId, messages) ->
+            val arr = JSONArray()
+            messages.forEach { msg ->
+                arr.put(
+                    JSONObject().apply {
+                        put("id", msg.id)
+                        put("from", msg.from)
+                        put("text", msg.text)
+                        put("mine", msg.mine)
+                        put("isSystem", msg.isSystem)
+                    }
+                )
+            }
+            root.put(peerId, arr)
+        }
+        prefs.edit().putString(KEY_DM_MESSAGES, root.toString()).apply()
+    }
+
+    private fun loadStations() {
+        stations.clear()
+        val raw = prefs.getString(KEY_STATIONS, null) ?: return
+        try {
+            val arr = JSONArray(raw)
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                stations.add(
+                    BikeStation(
+                        id = obj.getString("id"),
+                        name = obj.getString("name"),
+                        capacity = obj.getInt("capacity"),
+                        available = obj.getInt("available")
+                    )
+                )
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun saveStations() {
+        val arr = JSONArray()
+        stations.forEach { st ->
+            arr.put(
+                JSONObject().apply {
+                    put("id", st.id)
+                    put("name", st.name)
+                    put("available", st.available)
+                    put("capacity", st.capacity)
+                }
+            )
+        }
+        prefs.edit().putString(KEY_STATIONS, arr.toString()).apply()
+    }
+
+    private fun clearLocalData() {
+        prefs.edit()
+            .remove(KEY_PUBLIC_MESSAGES)
+            .remove(KEY_DM_MESSAGES)
+            .remove(KEY_STATIONS)
+            .remove(KEY_SELECTED_DM_PEER)
+            .apply()
+
+        publicMessages.clear()
+        dmMessages.clear()
+        stations.clear()
+        selectedDmPeerId = null
+
+        stations.addAll(defaultStations())
+        saveStations()
+        addSystemMsg("Local chat history cleared")
+    }
+
+    // ---------------- Helpers ----------------
+
+    private fun addSystemMsg(text: String) {
+        publicMessages.add(
+            ChatMessage(
+                id = UUID.randomUUID().toString().take(8),
+                from = SYSTEM_NAME,
+                text = text,
+                mine = false,
+                isSystem = true
+            )
+        )
+        savePublicMessages()
+    }
+
+    private fun peerName(endpointId: String): String {
+        return peers.firstOrNull { it.id == endpointId }?.name ?: endpointId.take(8)
+    }
+
+    private fun upsertPeer(id: String, name: String, connected: Boolean) {
         val idx = peers.indexOfFirst { it.id == id }
         if (idx >= 0) {
-            val old = peers[idx]
-            peers[idx] = old.copy(name = name, connected = connected, isSimulated = simulated)
+            val current = peers[idx]
+            peers[idx] = current.copy(name = name, connected = connected)
         } else {
-            peers.add(Peer(id, name, connected, simulated))
+            peers.add(Peer(id = id, name = name, connected = connected))
         }
     }
 
     private fun markDisconnected(id: String) {
         val idx = peers.indexOfFirst { it.id == id }
-        if (idx >= 0) peers[idx] = peers[idx].copy(connected = false)
+        if (idx >= 0) {
+            peers[idx] = peers[idx].copy(connected = false)
+        }
     }
 }
 
-// ---------- Models ----------
-data class Peer(val id: String, val name: String, val connected: Boolean, val isSimulated: Boolean)
-data class ChatMessage(val id: String, val from: String, val text: String, val mine: Boolean, val isSystem: Boolean = false)
-data class BikeStation(val id: String, val name: String, val capacity: Int, var available: Int, val x: Float)
+// ---------------- Models ----------------
 
-// ---------- UI ----------
+data class Peer(
+    val id: String,
+    val name: String,
+    val connected: Boolean
+)
+
+data class ChatMessage(
+    val id: String,
+    val from: String,
+    val text: String,
+    val mine: Boolean,
+    val isSystem: Boolean = false
+)
+
+data class BikeStation(
+    val id: String,
+    val name: String,
+    val capacity: Int,
+    val available: Int
+)
+
+// ---------------- UI ----------------
+
 @Composable
 private fun AppShell(
-    myName: String,
-    simulationMode: Boolean,
-    runningReal: Boolean,
+    nickname: String,
+    isConnected: Boolean,
     peers: List<Peer>,
     selectedDmPeerId: String?,
     publicMessages: List<ChatMessage>,
@@ -386,60 +713,68 @@ private fun AppShell(
     stations: List<BikeStation>,
     proximityMeters: Float,
     onProximityChange: (Float) -> Unit,
-    onToggleMode: (Boolean) -> Unit,
+    showNicknameDialog: Boolean,
+    onRequestNickname: () -> Unit,
+    onSaveNickname: (String) -> Unit,
+    onDismissNicknameDialog: () -> Unit,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+    onClearLocalData: () -> Unit,
     onSelectDmPeer: (String) -> Unit,
     onSendPublic: (String) -> Unit,
-    onSendDm: (String, String) -> Unit,
-    onStartReal: () -> Unit,
-    onStopReal: () -> Unit,
-    onRequestPerms: () -> Unit
+    onSendDm: (String, String) -> Unit
 ) {
-    var tab by remember { mutableIntStateOf(0) } // 0 public, 1 dm, 2 stations
+    var tab by remember { mutableIntStateOf(0) }
 
     Column(Modifier.fillMaxSize()) {
-
-        // ---- Top bar (stable) ----
         Surface(tonalElevation = 2.dp) {
             Row(
-                Modifier.fillMaxWidth().padding(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(Modifier.weight(1f)) {
                     Text("ChatBox", style = MaterialTheme.typography.titleLarge)
                     Text(
-                        text = when {
-                            simulationMode -> "Simulation · $myName"
-                            runningReal -> "Real (auto) · $myName"
-                            else -> "Real · $myName"
-                        },
+                        text = if (nickname.isBlank()) "Anonymous name not set" else "You are: $nickname",
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                    Text(
+                        text = if (isConnected) "Network: connected" else "Network: disconnected",
                         style = MaterialTheme.typography.labelSmall
                     )
                 }
 
-                //little buttons
-                TextButton(onClick = onRequestPerms) { Text("Perms") }
-
-                if (!simulationMode) {
-                    IconButton(onClick = onStartReal) { Icon(Icons.Default.PlayArrow, null) }
-                    IconButton(onClick = onStopReal) { Icon(Icons.Default.Close, null) }
+                IconButton(onClick = onRequestNickname) {
+                    Icon(Icons.Default.Person, contentDescription = "Nickname")
                 }
 
-                TextButton(onClick = { onToggleMode(!simulationMode) }) {
-                    Text(if (simulationMode) "REAL" else "SIM")
+                TextButton(onClick = {
+                    if (isConnected) onDisconnect() else onConnect()
+                }) {
+                    Text(if (isConnected) "Disconnect" else "Connect")
+                }
+
+                IconButton(onClick = onClearLocalData) {
+                    Icon(Icons.Default.Delete, contentDescription = "Clear data")
                 }
             }
         }
 
-        // ---- Tabs (stable) ----
-        Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            TabButton(text = "Public", selected = tab == 0) { tab = 0 }
-            TabButton(text = "DM", selected = tab == 1) { tab = 1 }
-            TabButton(text = "Stations", selected = tab == 2) { tab = 2 }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            TabButton("Public", tab == 0) { tab = 0 }
+            TabButton("DM", tab == 1) { tab = 1 }
+            TabButton("Stations", tab == 2) { tab = 2 }
         }
 
         Divider()
 
-        // ---- Content ----
         when (tab) {
             0 -> PublicChat(
                 modifier = Modifier.fillMaxSize(),
@@ -447,6 +782,7 @@ private fun AppShell(
                 messages = publicMessages,
                 onSend = onSendPublic
             )
+
             1 -> DmChat(
                 modifier = Modifier.fillMaxSize(),
                 peers = peers,
@@ -455,6 +791,7 @@ private fun AppShell(
                 onSelectPeer = onSelectDmPeer,
                 onSend = onSendDm
             )
+
             2 -> StationsView(
                 modifier = Modifier.fillMaxSize(),
                 stations = stations,
@@ -463,18 +800,70 @@ private fun AppShell(
             )
         }
     }
+
+    if (showNicknameDialog) {
+        NicknameDialog(
+            initialValue = nickname,
+            onSave = onSaveNickname,
+            onDismiss = onDismissNicknameDialog
+        )
+    }
 }
 
 @Composable
 private fun TabButton(text: String, selected: Boolean, onClick: () -> Unit) {
-    val bg = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+    val bg =
+        if (selected) MaterialTheme.colorScheme.primaryContainer
+        else MaterialTheme.colorScheme.surfaceVariant
+
     Surface(
         color = bg,
         shape = RoundedCornerShape(999.dp),
         modifier = Modifier.clickable(onClick = onClick)
     ) {
-        Text(text, modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp))
+        Text(
+            text = text,
+            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+        )
     }
+}
+
+@Composable
+private fun NicknameDialog(
+    initialValue: String,
+    onSave: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var text by remember { mutableStateOf(initialValue) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            Button(onClick = { onSave(text) }) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            if (initialValue.isNotBlank()) {
+                TextButton(onClick = onDismiss) {
+                    Text("Cancel")
+                }
+            }
+        },
+        title = { Text("Choose your anonymous name") },
+        text = {
+            Column {
+                Text("This name is how other devices will see you inside the network.")
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    singleLine = true,
+                    placeholder = { Text("Anonymous name") }
+                )
+            }
+        }
+    )
 }
 
 @Composable
@@ -485,11 +874,17 @@ private fun PublicChat(
     onSend: (String) -> Unit
 ) {
     Column(modifier.padding(12.dp)) {
-        Text("Peers connected: ${peers.count { it.connected }}", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Connected peers: ${peers.count { it.connected }}",
+            style = MaterialTheme.typography.titleMedium
+        )
         Spacer(Modifier.height(8.dp))
         ChatList(Modifier.weight(1f), messages)
         Spacer(Modifier.height(8.dp))
-        ChatComposer("Message to public chat…", onSend)
+        ChatComposer(
+            hint = "Write to the public network…",
+            onSend = onSend
+        )
     }
 }
 
@@ -502,53 +897,70 @@ private fun DmChat(
     onSelectPeer: (String) -> Unit,
     onSend: (String, String) -> Unit
 ) {
-    val connectedPeers = peers.filter { it.connected }
-    val selected = connectedPeers.firstOrNull { it.id == selectedPeerId }
+    val availablePeers = peers.filter { it.connected || dmMessages.containsKey(it.id) }
+    val selectedPeer = availablePeers.firstOrNull { it.id == selectedPeerId }
     val list = dmMessages[selectedPeerId].orEmpty()
 
     Column(modifier.padding(12.dp)) {
-        Text("Privates chats", style = MaterialTheme.typography.titleMedium)
+        Text("Private messages", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
 
-        // selector
         LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = 120.dp)
+                .heightIn(max = 130.dp)
                 .clip(RoundedCornerShape(14.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant)
                 .padding(8.dp)
         ) {
-            items(count = connectedPeers.size) { idx ->
-                val p = connectedPeers[idx]
+            items(availablePeers.size) { idx ->
+                val peer = availablePeers[idx]
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(10.dp))
-                        .clickable { onSelectPeer(p.id) }
+                        .clickable { onSelectPeer(peer.id) }
                         .padding(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(p.name, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    if (p.id == selectedPeerId) Text("✓")
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            text = peer.name,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = if (peer.connected) "Connected" else "Offline history",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                    if (peer.id == selectedPeerId) Text("✓")
                 }
             }
         }
 
         Spacer(Modifier.height(10.dp))
 
-        if (selected == null) {
-            Text("Select a connected peer to open a DM.")
+        if (selectedPeer == null) {
+            Text("Select a peer to open the DM history.")
             return
         }
 
-        Text("DM con ${selected.name}", style = MaterialTheme.typography.titleMedium)
+        Text("DM with ${selectedPeer.name}", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
         ChatList(Modifier.weight(1f), list)
         Spacer(Modifier.height(8.dp))
-        ChatComposer("Message to ${selected.name}…") { txt -> onSend(selected.id, txt) }
+
+        ChatComposer(
+            hint = if (selectedPeer.connected) "Message ${selectedPeer.name}…" else "Peer offline",
+            enabled = selectedPeer.connected,
+            onSend = { txt ->
+                onSend(selectedPeer.id, txt)
+            }
+        )
     }
 }
+
 
 @Composable
 private fun StationsView(
@@ -558,24 +970,61 @@ private fun StationsView(
     onProximityChange: (Float) -> Unit
 ) {
     Column(modifier.padding(12.dp)) {
-        Text("Simulated proximity: ${proximityMeters.toInt()}m", style = MaterialTheme.typography.titleMedium)
-        Slider(value = proximityMeters, onValueChange = onProximityChange, valueRange = 0f..30f)
+        Text("Nearby stations", style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
 
+        Text("Simulated proximity: ${proximityMeters.toInt()} m")
+        Slider(
+            value = proximityMeters,
+            onValueChange = onProximityChange,
+            valueRange = 0f..30f
+        )
+
+        Spacer(Modifier.height(8.dp))
+
+        if (stations.isEmpty()) {
+            Text("No station broadcasts received yet.")
+            return
+        }
+
         LazyColumn(Modifier.fillMaxSize()) {
-            items(count = stations.size) { idx ->
+            items(stations.size) { idx ->
                 val st = stations[idx]
-                val near = kotlin.math.abs(st.x - proximityMeters) < 5f
+                val stationPosition = idx * 10f
+                val near = abs(stationPosition - proximityMeters) < 5f
+
                 Card(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 6.dp),
                     colors = CardDefaults.cardColors(
-                        containerColor = if (near) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface
+                        containerColor = if (near)
+                            MaterialTheme.colorScheme.primaryContainer
+                        else
+                            MaterialTheme.colorScheme.surface
                     )
                 ) {
                     Column(Modifier.padding(12.dp)) {
                         Text(st.name, style = MaterialTheme.typography.titleMedium)
-                        Text("Availables: ${st.available}/${st.capacity}")
-                        if (near) Text("Close: you receive updates", style = MaterialTheme.typography.labelMedium)
+                        Spacer(Modifier.height(4.dp))
+                        Text("ID: ${st.id}")
+                        Text("Available: ${st.available}/${st.capacity}")
+                        Text("Distance: ${abs(stationPosition - proximityMeters).toInt()} m")
+
+                        if (st.capacity > 0) {
+                            Spacer(Modifier.height(8.dp))
+                            Slider(
+                                value = st.available.toFloat(),
+                                onValueChange = {},
+                                valueRange = 0f..st.capacity.toFloat(),
+                                enabled = false
+                            )
+                        }
+
+                        if (near) {
+                            Spacer(Modifier.height(6.dp))
+                            Text("You are close to this station", style = MaterialTheme.typography.labelMedium)
+                        }
                     }
                 }
             }
@@ -584,16 +1033,20 @@ private fun StationsView(
 }
 
 @Composable
-private fun ChatList(modifier: Modifier, messages: List<ChatMessage>) {
+private fun ChatList(
+    modifier: Modifier,
+    messages: List<ChatMessage>
+) {
     val reversed = messages.asReversed()
+
     LazyColumn(
         modifier = modifier.fillMaxWidth(),
         reverseLayout = true,
         contentPadding = PaddingValues(vertical = 8.dp)
     ) {
-        items(count = reversed.size) { idx ->
-            val m = reversed[idx]
-            ChatBubble(m)
+        items(reversed.size) { idx ->
+            val msg = reversed[idx]
+            ChatBubble(msg)
             Spacer(Modifier.height(6.dp))
         }
     }
@@ -608,11 +1061,26 @@ private fun ChatBubble(msg: ChatMessage) {
         else -> MaterialTheme.colorScheme.secondaryContainer
     }
 
-    Column(Modifier.fillMaxWidth(), horizontalAlignment = align) {
-        Surface(color = bg, shape = RoundedCornerShape(16.dp)) {
-            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp).widthIn(max = 320.dp)) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = align
+    ) {
+        Surface(
+            color = bg,
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(
+                modifier = Modifier
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+                    .widthIn(max = 320.dp)
+            ) {
                 if (!msg.mine) {
-                    Text(msg.from, style = MaterialTheme.typography.labelSmall)
+                    Text(
+                        msg.from,
+                        style = MaterialTheme.typography.labelSmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                     Spacer(Modifier.height(2.dp))
                 }
                 Text(msg.text)
@@ -622,20 +1090,35 @@ private fun ChatBubble(msg: ChatMessage) {
 }
 
 @Composable
-private fun ChatComposer(hint: String, onSend: (String) -> Unit) {
+private fun ChatComposer(
+    hint: String,
+    enabled: Boolean = true,
+    onSend: (String) -> Unit
+) {
     var text by remember { mutableStateOf("") }
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
         OutlinedTextField(
             value = text,
             onValueChange = { text = it },
             modifier = Modifier.weight(1f),
             placeholder = { Text(hint) },
-            singleLine = true
+            singleLine = true,
+            enabled = enabled
         )
         Spacer(Modifier.width(8.dp))
         IconButton(
-            onClick = { onSend(text); text = "" },
-            modifier = Modifier.size(44.dp)
+            onClick = {
+                val clean = text.trim()
+                if (clean.isNotEmpty()) {
+                    onSend(clean)
+                    text = ""
+                }
+            },
+            enabled = enabled
         ) {
             Icon(Icons.Default.Send, contentDescription = "Send")
         }
